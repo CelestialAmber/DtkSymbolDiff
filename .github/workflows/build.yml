@@ -15,20 +15,26 @@ env:
 jobs:
   build:
     name: Build DtkSymbolDiff
-    runs-on: ubuntu-latest
     
     strategy:
       matrix:
-        runtime:
-          - win-x64
-          - win-x86
-          - linux-x64
-          - linux-arm64
-          - osx-x64
-          - osx-arm64
-    
+        include:
+          - platform: windows-latest
+            target: win-x64
+          - platform: windows-latest
+            target: win-x86
+          - platform: ubuntu-latest
+            target: linux-x64
+          - platform: ubuntu-24.04-arm
+            target: linux-arm64
+          - platform: macos-latest
+            target: osx-x64
+          - platform: macos-latest
+            target: osx-arm64
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
     
     - name: Setup .NET
@@ -36,34 +42,17 @@ jobs:
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
     
-    - name: Build ${{ matrix.runtime }}
+    - name: Build ${{ matrix.target }}
       run: |
-        dotnet publish \
-          --configuration Release \
-          --runtime ${{ matrix.runtime }} \
-          --self-contained true \
-          -p:PublishSingleFile=true \
-          --output ./publish/${{ matrix.runtime }}
-    
-    - name: Create archive (Windows)
-      if: startsWith(matrix.runtime, 'win')
-      run: |
-        cd publish/${{ matrix.runtime }}
-        zip -r ../../${{ env.PROJECT_NAME }}-${{ matrix.runtime }}.zip .
-    
-    - name: Create archive (Unix)
-      if: startsWith(matrix.runtime, 'linux') || startsWith(matrix.runtime, 'osx')
-      run: |
-        cd publish/${{ matrix.runtime }}
-        tar -czf ../../${{ env.PROJECT_NAME }}-${{ matrix.runtime }}.tar.gz .
-    
-    - name: Upload platform artifacts
+        dotnet publish -c Release -r ${{ matrix.target }} -p:PublishDir=../publish/${{ matrix.target }}
+
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.PROJECT_NAME }}-${{ matrix.runtime }}
+        name: ${{ env.PROJECT_NAME }}-${{ matrix.target }}
         path: |
-          ${{ env.PROJECT_NAME }}-${{ matrix.runtime }}.zip
-          ${{ env.PROJECT_NAME }}-${{ matrix.runtime }}.tar.gz
+          publish/${{ matrix.target }}/${{ env.PROJECT_NAME }}
+          publish/${{ matrix.target }}/${{ env.PROJECT_NAME }}.exe
 
   release:
     name: Release
@@ -72,27 +61,55 @@ jobs:
     needs: [ build ]
     permissions:
       contents: write
-
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      
+    - name: Check git tag against package version
+      shell: bash
+      run: |
+        set -eou pipefail
+        tag='${{github.ref}}'
+        tag="${tag#refs/tags/}"
+        name="${{env.PROJECT_NAME}}"
+        version=$(grep '^\s*<PackageVersion' $name/$name.csproj | head -1 | awk -F'[<>]' '{print $3}')
+        version="v$version"
+        if [ "$tag" != "$version" ]; then
+          echo "::error::Git tag doesn't match the package version! ($tag != $version)"
+          exit 1
+        fi
   
-    - name: Download all artifacts
+    - name: Download artifacts
       uses: actions/download-artifact@v4
       with:
-        path: release-artifacts
+        path: artifacts
 
-    - name: Organize release files
+    - name: Move artifacts
+      working-directory: artifacts
       run: |
-        mkdir -p release-files
-        find release-artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec cp {} release-files/ \;
-        ls -lh release-files/
+        set -euo pipefail
+        mkdir ../out
+        for dir in */; do
+          for file in "$dir"*; do
+            base=$(basename "$file")
+            name="${base%.*}"
+            ext="${base##*.}"
+            if [ "$ext" = "$base" ]; then
+                ext=""
+            else
+                ext=".$ext"
+            fi
+            arch="${dir%/}" # remove trailing slash
+            arch="${arch##"$name-"}" # remove bin name
+            dst="../out/${name}-${arch}${ext}"
+            mv "$file" "$dst"
+          done
+        done
+        ls -R ../out/
   
-    - name: Create GitHub Release
+    - name: Release
       uses: softprops/action-gh-release@v2
       with:
-        files: release-files/*
+        files: out/*
         draft: true
         generate_release_notes: true
