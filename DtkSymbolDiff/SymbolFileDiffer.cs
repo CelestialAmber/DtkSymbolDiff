@@ -28,6 +28,16 @@ namespace DtkSymbolDiff
         }
     }
 
+    class SymbolMatchComparer : IComparer<SymbolMatch>
+    {
+        public int Compare(SymbolMatch x, SymbolMatch y)
+        {
+            if (x.list1StartIndex == y.list1StartIndex) return 0;
+            else return x.list1StartIndex.CompareTo(y.list1StartIndex);
+        }
+
+    }
+
     class SymbolMatch
     {
         public int list1StartIndex, list1EndIndex;
@@ -112,7 +122,6 @@ namespace DtkSymbolDiff
 
                     /* Size is allowed to be optional, so only parse it if the line has it. Otherwise, the size
                     is just set to 0. */
-                    ;
                     if (match.Groups[3].Success) size = Convert.ToInt32(match.Groups[3].Value, 16);
 
                     Symbol symbol = new Symbol(name, address, size);
@@ -182,7 +191,7 @@ namespace DtkSymbolDiff
                     sw.WriteLine();
                 }
 
-                if (mismatchStartIndex1 < mismatchEndIndex2)
+                if (mismatchStartIndex2 < mismatchEndIndex2)
                 {
                     int length = mismatchEndIndex2 - mismatchStartIndex2;
                     if (length > 1) sw.WriteLine("List 2 mismatches (lines {0}-{1}, {2} total symbols):",
@@ -206,6 +215,9 @@ namespace DtkSymbolDiff
             DiffRange currentList1Range = new DiffRange(0, symbolList1.Count);
             DiffRange currentList2Range = new DiffRange(0, symbolList2.Count);
 
+            //Stupid
+            SymbolMatchComparer comparer = new SymbolMatchComparer();
+
             bool finished = false;
 
 
@@ -216,8 +228,8 @@ namespace DtkSymbolDiff
                 int list2StartIndex = currentList2Range.rangeStart;
                 int list2EndIndex = currentList2Range.rangeEnd;
 
-                //Console.WriteLine("Current list 1 range: {0}-{1}, current list 2 range: {2}-{3}",
-                //    list1StartIndex, list1EndIndex - 1, list2StartIndex, list2EndIndex - 1);
+                Console.WriteLine("Current list 1 range: {0}-{1}, current list 2 range: {2}-{3}",
+                list1StartIndex, list1EndIndex - 1, list2StartIndex, list2EndIndex - 1);
 
                 //Find the longest match for the current range
                 SymbolMatch match = FindLongestMatch(list1StartIndex, list2StartIndex,
@@ -227,18 +239,21 @@ namespace DtkSymbolDiff
 
                 if (match.length > 0)
                 {
-                    /* Check if this match is inconsistent with the indices of previous matches for the second list.
-                    If so, reject it. */
+                    /* Check if this match is inconsistent with the indices of previous matches. If so, reject it. */
                     for (int i = 0; i < matches.Count; i++)
                     {
                         SymbolMatch curMatch = matches[i];
 
-                        if (curMatch.list1EndIndex > match.list1StartIndex) break;
-                        else if (curMatch.list2EndIndex > match.list2StartIndex)
-                        {
-                            invalidMatch = true;
-                            break;
-                        }
+                        bool matchPastList1 = curMatch.list1EndIndex > match.list1StartIndex;
+                        bool matchPastList2 = curMatch.list2EndIndex > match.list2StartIndex;
+
+                        //If the indices of both lists are past the ones of the new match, the match is valid.
+                        if (matchPastList1 && matchPastList2) break;
+                        else if (!matchPastList1 && !matchPastList2) continue; //If both still are less, keep going
+
+                        //Otherwise, the order of the indices is inconsistent, so the match is probably invalid
+                        invalidMatch = true;
+                        break;
 
                     }
                 }
@@ -248,16 +263,17 @@ namespace DtkSymbolDiff
                 if (!invalidMatch)
                 {
 
-                    //Console.WriteLine("Found match (list 1 range: {0}-{1}, list 2 range: {2}-{3})",
-                    //    match.list1StartIndex, match.list1EndIndex - 1, match.list2StartIndex, match.list2EndIndex - 1);
+                    Console.WriteLine("Found match (list 1 range: {0}-{1}, list 2 range: {2}-{3})",
+                    match.list1StartIndex, match.list1EndIndex - 1, match.list2StartIndex, match.list2EndIndex - 1);
 
                     //Mark the matched range, and add the match to the list
                     Array.Fill<byte>(list1CheckedLines, 1, match.list1StartIndex, match.length);
                     Array.Fill<byte>(list2CheckedLines, 1, match.list2StartIndex, match.length);
 
-                    //Put the new match into the list in order
-                    matches.Add(match);
-                    matches.Sort((a, b) => a.list1StartIndex.CompareTo(b.list1StartIndex));
+                    //Put the new match into the list in order by the indices of the first list
+                    int insertIndex = matches.BinarySearch(match, comparer);
+                    if (insertIndex < 0) insertIndex = ~insertIndex;
+                    matches.Insert(insertIndex, match);
                 }
                 else
                 {
@@ -304,9 +320,6 @@ namespace DtkSymbolDiff
                     finished = true;
                 }
             }
-
-            //Sort the matches
-           //matches.Sort((a, b) => a.list1StartIndex.CompareTo(b.list1StartIndex));
         }
 
         void FindFirstRangeFromArray(ref DiffRange range, byte[] checkedList)
@@ -317,7 +330,7 @@ namespace DtkSymbolDiff
             int startIndex = range.rangeStart;
 
             //Look for the next empty range from the start for each list
-            for (int i = startIndex; i < checkedList.Length; i++)
+            for (int i = 0; i < checkedList.Length; i++)
             {
                 if (checkedList[i] == 0)
                 {
