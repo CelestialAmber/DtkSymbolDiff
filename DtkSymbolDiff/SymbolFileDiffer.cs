@@ -1,11 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics.Metrics;
 using System.IO;
-using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using System.Diagnostics;
 
 namespace DtkSymbolDiff
@@ -21,6 +17,12 @@ namespace DtkSymbolDiff
             this.name = name;
             this.address = address;
             this.size = size;
+        }
+
+        //Checks if a symbol matches first based on name, then on size.
+        public static bool IsEqual(Symbol s1, Symbol s2)
+        {
+            return s1.name == s2.name || s1.size == s2.size;
         }
 
         public new string ToString()
@@ -87,12 +89,6 @@ namespace DtkSymbolDiff
             {
                 filesLoaded = true;
             }
-        }
-
-        //Checks if a symbol matches first based on name, then on size.
-        bool CheckIfSymbolsMatch(Symbol s1, Symbol s2)
-        {
-            return s1.name == s2.name || s1.size == s2.size;
         }
 
         List<Symbol> ReadSymbolFile(string path)
@@ -222,7 +218,6 @@ namespace DtkSymbolDiff
 
             bool finished = false;
 
-
             while (!finished)
             {
                 int list1StartIndex = currentList1Range.rangeStart;
@@ -260,9 +255,7 @@ namespace DtkSymbolDiff
                     }
                 }
 
-                if (match.length == 0) invalidMatch = true;
-
-                if (!invalidMatch)
+                if (match.length > 0 && !invalidMatch)
                 {
 
                     Debug.WriteLine("Found match (list 1 range: {0}-{1}, list 2 range: {2}-{3})",
@@ -279,7 +272,8 @@ namespace DtkSymbolDiff
                 }
                 else
                 {
-                    //If no match was found, rule out the range that comes earlier
+                    /* If no match was found, decide which range to rule out first based on distance
+                    from the last match, then on size. If both are equal, remove both. */
 
                     int lastMatchPosList1 = 0;
                     int lastMatchPosList2 = 0;
@@ -302,15 +296,28 @@ namespace DtkSymbolDiff
 
                     int list1RelativePos = list1StartIndex - lastMatchPosList1;
                     int list2RelativePos = list2StartIndex - lastMatchPosList2;
+                    int length1 = currentList1Range.length;
+                    int length2 = currentList2Range.length;
 
-                    if (list1RelativePos <= list2RelativePos)
-                    {
-                        Array.Fill<byte>(list1CheckedLines, 1, list1StartIndex, currentList1Range.length);
-                    }
+                    bool removeList1Range = false;
+                    bool removeList2Range = false;
+
+                    if (list1RelativePos < list2RelativePos) removeList1Range = true;
+                    else if (list1RelativePos > list2RelativePos) removeList2Range = true;
                     else
                     {
-                        Array.Fill<byte>(list2CheckedLines, 1, list2StartIndex, currentList2Range.length);
+                        //In the case of a tie, choose the smaller one. If both are equal, remove both
+                        if (length1 < length2) removeList1Range = true;
+                        else if (length1 > length2) removeList2Range = true;
+                        else
+                        {
+                            removeList1Range = true;
+                            removeList2Range = true;
+                        }
                     }
+
+                    if (removeList1Range) Array.Fill<byte>(list1CheckedLines, 1, list1StartIndex, length1);
+                    if (removeList2Range) Array.Fill<byte>(list2CheckedLines, 1, list2StartIndex, length2);
                 }
 
                 //Update the two range variables
@@ -383,7 +390,7 @@ namespace DtkSymbolDiff
                     int offset = 0;
 
                     //Keep going until a mismatch is found (name and size don't match)
-                    while (CheckIfSymbolsMatch(symbolList1[i + offset], symbolList2[j + offset]))
+                    while (Symbol.IsEqual(symbolList1[i + offset], symbolList2[j + offset]))
                     {
                         matchLength++;
                         offset++;
@@ -391,17 +398,31 @@ namespace DtkSymbolDiff
                         if (i + offset >= endIndex1 || j + offset >= endIndex2) break;
                     }
 
-                    if (matchLength > maxMatchLength)
-                    {
-                        maxMatchLength = matchLength;
-                        bestMatchStartIndex1 = i;
-                        bestMatchStartIndex2 = j;
-                    }
-
                     if (matchLength > 0)
                     {
+                        //Determine if the current match is better than the current best
+                        
+                        bool isBetterMatch = false;
+
+                        if (matchLength > maxMatchLength) isBetterMatch = true;
+                        else if(matchLength == maxMatchLength) {
+                             /* If the match length is equal to the current best, accept it over it if it comes earlier
+                             than the current best match */
+                             int avgIndex = (i + j) / 2;
+                             int bestMatchAvgIndex = (bestMatchStartIndex1 + bestMatchStartIndex2) / 2;
+
+                             if (avgIndex < bestMatchAvgIndex) isBetterMatch = true;
+                         }
+
+                         if (isBetterMatch)
+                         {
+                             maxMatchLength = matchLength;
+                             bestMatchStartIndex1 = i;
+                             bestMatchStartIndex2 = j;
+                         }
+
                         //Skip past matched range
-                        j += offset - 1;
+                        //j += offset - 1;
                     }
                 }
             }
