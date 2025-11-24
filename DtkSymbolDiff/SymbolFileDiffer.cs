@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace DtkSymbolDiff
 {
@@ -82,7 +83,7 @@ namespace DtkSymbolDiff
             symbolList1 = ReadSymbolFile(file1Path);
             symbolList2 = ReadSymbolFile(file2Path);
 
-            if(symbolList1 != null && symbolList2 != null)
+            if (symbolList1 != null && symbolList2 != null)
             {
                 filesLoaded = true;
             }
@@ -229,7 +230,7 @@ namespace DtkSymbolDiff
                 int list2StartIndex = currentList2Range.rangeStart;
                 int list2EndIndex = currentList2Range.rangeEnd;
 
-                Console.WriteLine("Current list 1 range: {0}-{1}, current list 2 range: {2}-{3}",
+                Debug.WriteLine("Current list 1 range: {0}-{1}, current list 2 range: {2}-{3}",
                 list1StartIndex, list1EndIndex - 1, list2StartIndex, list2EndIndex - 1);
 
                 //Find the longest match for the current range
@@ -264,7 +265,7 @@ namespace DtkSymbolDiff
                 if (!invalidMatch)
                 {
 
-                    Console.WriteLine("Found match (list 1 range: {0}-{1}, list 2 range: {2}-{3})",
+                    Debug.WriteLine("Found match (list 1 range: {0}-{1}, list 2 range: {2}-{3})",
                     match.list1StartIndex, match.list1EndIndex - 1, match.list2StartIndex, match.list2EndIndex - 1);
 
                     //Mark the matched range, and add the match to the list
@@ -397,7 +398,7 @@ namespace DtkSymbolDiff
                         bestMatchStartIndex2 = j;
                     }
 
-                    if(matchLength > 0)
+                    if (matchLength > 0)
                     {
                         //Skip past matched range
                         j += offset - 1;
