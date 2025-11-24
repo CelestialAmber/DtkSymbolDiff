@@ -104,13 +104,14 @@ namespace DtkSymbolDiff
 
             StreamReader sr = new StreamReader(path);
             List<Symbol> symbols = new List<Symbol>();
-            Regex lineRegex = new Regex(@"^([^\s]+) = \.text:(0x[0-9A-F]{8});(?:.+size:(0x[0-9A-F]+)|).*$");
+            Regex lineRegex = new Regex(@"^([^\s]+) = .+:(0x[0-9A-F]{8});(?:.+size:(0x[0-9A-F]+)|).*$");
 
             while (!sr.EndOfStream)
             {
                 string line = sr.ReadLine().Trim();
 
-                if (line == "") continue;
+                //Ignore empty lines and comment lines
+                if (line == "" || line.StartsWith("//")) continue;
 
                 Match match = lineRegex.Match(line);
 
@@ -389,14 +390,17 @@ namespace DtkSymbolDiff
                         if (i + offset >= endIndex1 || j + offset >= endIndex2) break;
                     }
 
-                    if (matchLength >= maxMatchLength)
+                    if (matchLength > maxMatchLength)
                     {
                         maxMatchLength = matchLength;
                         bestMatchStartIndex1 = i;
                         bestMatchStartIndex2 = j;
+                    }
 
-                        //j += offset - 1;
-                        //break;
+                    if(matchLength > 0)
+                    {
+                        //Skip past matched range
+                        j += offset - 1;
                     }
                 }
             }
