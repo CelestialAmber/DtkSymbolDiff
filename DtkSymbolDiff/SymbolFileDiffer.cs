@@ -32,6 +32,14 @@ namespace DtkSymbolDiff
         }
     }
 
+    struct SectionDiffResults
+    {
+        public Section section1;
+        public Section section2;
+        public string sectionName;
+        public List<SymbolMatch> matches;
+    }
+
     struct DiffRange
     {
         public int rangeStart, rangeEnd;
@@ -49,17 +57,22 @@ namespace DtkSymbolDiff
     {
         public SymbolFile file1;
         public SymbolFile file2;
-        public List<SymbolMatch> matches;
+        List<SectionDiffResults> diffResultsList = new List<SectionDiffResults>();
         public bool filesLoaded = false;
         public StreamWriter sw;
+        Options options;
 
-        bool allowSizeLeniency = false; //Allows symbols to still match as long at their sizes are relatively close
+        //Threshold for symbol sizes
         const float sizeThreshold = 0.95f;
+        /* Minimum match length needed to allow threshold check to be done. This
+        helps prevent random unrelated symbols from matching, while also helping 
+        in the case where symbols with different sizes are most likely to be the same. */
+        const int matchLengthThreshold = 10;
         
 
-        public SymbolFileDiffer(string file1Path, string file2Path)
+        public SymbolFileDiffer(string file1Path, string file2Path, Options options)
         {
-            matches = new List<SymbolMatch>();
+            this.options = options;
 
             file1 = new SymbolFile(file1Path);
             file2 = new SymbolFile(file2Path);
@@ -70,29 +83,69 @@ namespace DtkSymbolDiff
             }
         }
 
-
-        public void PrintMatches()
+        public void PrintDiff()
         {
-
             sw.WriteLine("List 1 file: {0}", file1.name);
             sw.WriteLine("List 2 file: {0}", file2.name);
             sw.WriteLine();
 
+            //Print the missing sections for each file.
+            PrintMissingSections();
+
+            foreach (SectionDiffResults results in diffResultsList)
+            {
+                PrintSectionMatches(results);
+            }
+
+            sw.Flush();
+        }
+
+        void PrintMissingSections()
+        {
+            foreach (Section section in file2.sections)
+            {
+                if (!file1.ContainsSection(section.name))
+                {
+                    sw.WriteLine("File 1 is missing section {0}", section.name);
+                }
+            }
+
+            sw.WriteLine();
+
+            foreach (Section section in file1.sections)
+            {
+                if (!file2.ContainsSection(section.name))
+                {
+                    sw.WriteLine("File 2 is missing section {0}", section.name);
+                }
+            }
+
+            sw.WriteLine();
+        }
+
+        void PrintSectionMatches(SectionDiffResults results)
+        {
+            List<Symbol> symbols1 = results.section1.symbols;
+            List<Symbol> symbols2 = results.section2.symbols;
+            List<SymbolMatch> matches = results.matches;
+
             int numMatches = matches.Count;
+
+            sw.WriteLine("Section: {0}", results.sectionName);
 
             //Print the matches
             for (int i = 0; i < numMatches; i++)
             {
                 SymbolMatch match = matches[i];
 
-                sw.WriteLine(string.Format("Lines {0}/{1} match ({2} total symbol(s))",
-                    CreateRangeString(match.list1StartIndex + 1, match.list1EndIndex), CreateRangeString(match.list2StartIndex + 1, match.list2EndIndex),
-                    match.length));
+                Symbol list1FirstSymbol = symbols1[match.list1StartIndex];
+                Symbol list1LastSymbol = symbols1[match.list1EndIndex - 1];
+                Symbol list2FirstSymbol = symbols2[match.list2StartIndex];
+                Symbol list2LastSymbol = symbols2[match.list2EndIndex - 1];
 
-                Symbol list1FirstSymbol = file1.symbols[match.list1StartIndex];
-                Symbol list1LastSymbol = file1.symbols[match.list1EndIndex - 1];
-                Symbol list2FirstSymbol = file2.symbols[match.list2StartIndex];
-                Symbol list2LastSymbol = file2.symbols[match.list2EndIndex - 1];
+                sw.WriteLine(string.Format("Symbols {0}/{1} match ({2} total symbol(s))",
+                CreateRangeString(match.list1StartIndex, match.list1EndIndex), CreateRangeString(match.list2StartIndex, match.list2EndIndex),
+                match.length));
 
                 if (match.length > 1)
                 {
@@ -114,8 +167,8 @@ namespace DtkSymbolDiff
                 index of the next match. */
                 if (i == matches.Count - 1)
                 {
-                    mismatchEndIndex1 = file1.symbols.Count;
-                    mismatchEndIndex2 = file2.symbols.Count;
+                    mismatchEndIndex1 = symbols1.Count;
+                    mismatchEndIndex2 = symbols2.Count;
 
                 }
                 else
@@ -127,32 +180,65 @@ namespace DtkSymbolDiff
 
                 int mismatchStartIndex1 = match.list1EndIndex;
                 int mismatchStartIndex2 = match.list2EndIndex;
-                int mismatchLength1 = mismatchEndIndex1 - mismatchStartIndex1;
-                int mismatchLength2 = mismatchEndIndex2 - mismatchStartIndex2;
 
                 bool list1Mismatch = mismatchStartIndex1 < mismatchEndIndex1;
                 bool list2Mismatch = mismatchStartIndex2 < mismatchEndIndex2;
 
                 if (list1Mismatch || list2Mismatch) {
-                    int list1StartLine = mismatchStartIndex1 + 1;
-                    int list2StartLine = mismatchStartIndex2 + 1;
 
-                    sw.WriteLine("Mismatch at lines {0}/{1}",
-                        CreateRangeString(list1StartLine, mismatchEndIndex1), CreateRangeString(list2StartLine, mismatchEndIndex2));
+                    string rangeString1 = CreateRangeString(mismatchStartIndex1, mismatchEndIndex1 - 1);
+                    string rangeString2 = CreateRangeString(mismatchStartIndex2, mismatchEndIndex2 - 1);
+
+                    //Change the print message depending on if both or only one list has symbols left
+                    if (list1Mismatch && list2Mismatch)
+                    {
+                        sw.WriteLine("Mismatch at symbols {0}/{1}", rangeString1, rangeString2);
+                    }
+                    else
+                    {
+                        int fileNumber = list1Mismatch ? 1 : 2;
+                        sw.WriteLine("Mismatch at symbols {0} (file {1})", list1Mismatch ? rangeString1 : rangeString2, fileNumber);
+                    }
 
                     if (list1Mismatch)
                     {
-                        PrintMismatchGroup(mismatchStartIndex1, mismatchEndIndex1, 0);
+                        for (int j = mismatchStartIndex1; j < mismatchEndIndex1; j++)
+                        {
+                            sw.WriteLine("-" + symbols1[j].ToString());
+                        }
+                        sw.WriteLine();
                     }
 
                     if (list2Mismatch)
                     {
-                        PrintMismatchGroup(mismatchStartIndex2, mismatchEndIndex2, 1);
+                        for (int j = mismatchStartIndex2; j < mismatchEndIndex2; j++)
+                        {
+                            sw.WriteLine("+" + symbols2[j].ToString());
+                        }
+                        sw.WriteLine();
                     }
                 }
             }
 
-            sw.Flush();
+            if (options.printDifferentSizeSymbols)
+            {
+                sw.WriteLine("Matched symbols with different sizes:");
+                for (int i = 0; i < numMatches; i++)
+                {
+                    SymbolMatch match = matches[i];
+
+                    for(int j = 0; j < match.length; j++)
+                    {
+                        Symbol symbol1 = symbols1[j + match.list1StartIndex];
+                        Symbol symbol2 = symbols2[j + match.list2StartIndex];
+
+                        if(symbol1.size != symbol2.size)
+                        {
+                            sw.WriteLine("{0} (0x{1:X}/0x{2:X})", symbol1.name, symbol1.size, symbol2.size);
+                        }
+                    }
+                }
+            }
         }
 
         string CreateRangeString(int start, int end)
@@ -161,27 +247,51 @@ namespace DtkSymbolDiff
             return length > 1 ? string.Format("{0}-{1}", start, end) : string.Format("{0}", start);
         }
 
-        void PrintMismatchGroup(int startIndex, int endIndex, int whichList)
-        {
-            for (int i = startIndex; i < endIndex; i++)
-            {
-                List<Symbol> list = whichList == 0 ? file1.symbols : file2.symbols;
-                sw.WriteLine((whichList == 0 ? "-" : "+") + list[i].ToString());
-            }
-            sw.WriteLine();
-        }
-
         public void DiffFiles()
         {
-            int list1Length = file1.totalSymbols;
-            int list2Length = file2.totalSymbols;
-            byte[] list1CheckedLines = new byte[list1Length];
-            byte[] list2CheckedLines = new byte[list2Length];
-            DiffRange currentList1Range = new DiffRange(0, list1Length);
-            DiffRange currentList2Range = new DiffRange(0, list2Length);
+            for(int i = 0; i < file1.sections.Count; i++)
+            {
+                Section section1 = file1.sections[i];
+                //Find the matching section in the other file. If it doesn't exist, skip diffing the section.
+                Section section2 = file2.GetSection(section1.name);
+
+                if(section2 != null)
+                {
+                    //If this section is a data section, and the include data symbols option is off, skip it
+                    if(!options.includeDataSymbols && !section1.IsCodeSection())
+                    {
+                        continue;
+                    }
+
+                    Console.WriteLine("Diffing section " + section1.name + ":");
+                    List<SymbolMatch> matches = DiffSections(section1, section2);
+                    SectionDiffResults results = new SectionDiffResults();
+                    results.matches = matches;
+                    results.section1 = section1;
+                    results.section2 = section2;
+                    results.sectionName = section1.name;
+                    diffResultsList.Add(results);
+                }
+                else
+                {
+                    Console.WriteLine("File 2 doesn't have section {0}, skipping", section1.name);
+                }
+            }
+        }
+
+        public List<SymbolMatch> DiffSections(Section section1, Section section2)
+        {
+            int section1Length = section1.symbols.Count;
+            int section2Length = section2.symbols.Count;
+            byte[] list1CheckedLines = new byte[section1Length];
+            byte[] list2CheckedLines = new byte[section2Length];
+            DiffRange currentList1Range = new DiffRange(0, section1Length);
+            DiffRange currentList2Range = new DiffRange(0, section2Length);
 
             //Stupid
             SymbolMatchComparer comparer = new SymbolMatchComparer();
+
+            List<SymbolMatch> matches = new List<SymbolMatch>();
 
             bool finished = false;
 
@@ -192,11 +302,11 @@ namespace DtkSymbolDiff
                 int list2StartIndex = currentList2Range.rangeStart;
                 int list2EndIndex = currentList2Range.rangeEnd;
 
-                Debug.WriteLine("Current list 1 range: {0}-{1}, current list 2 range: {2}-{3}",
-                list1StartIndex, list1EndIndex - 1, list2StartIndex, list2EndIndex - 1);
+                //Debug.WriteLine("Current list 1 range: {0}-{1}, current list 2 range: {2}-{3}",
+                //list1StartIndex, list1EndIndex - 1, list2StartIndex, list2EndIndex - 1);
 
                 //Find the longest match for the current range
-                SymbolMatch match = FindLongestMatch(list1StartIndex, list2StartIndex,
+                SymbolMatch match = FindLongestMatch(section1.symbols, section2.symbols, list1StartIndex, list2StartIndex,
                     list1EndIndex, list2EndIndex);
 
                 bool invalidMatch = false;
@@ -225,8 +335,8 @@ namespace DtkSymbolDiff
                 if (match.length > 0 && !invalidMatch)
                 {
 
-                    Debug.WriteLine("Found match (list 1 range: {0}-{1}, list 2 range: {2}-{3})",
-                    match.list1StartIndex, match.list1EndIndex - 1, match.list2StartIndex, match.list2EndIndex - 1);
+                    //Debug.WriteLine("Found match (list 1 range: {0}-{1}, list 2 range: {2}-{3})",
+                    //match.list1StartIndex, match.list1EndIndex - 1, match.list2StartIndex, match.list2EndIndex - 1);
 
                     //Mark the matched range, and add the match to the list
                     Array.Fill<byte>(list1CheckedLines, 1, match.list1StartIndex, match.length);
@@ -296,6 +406,8 @@ namespace DtkSymbolDiff
                     finished = true;
                 }
             }
+
+            return matches;
         }
 
         void FindFirstRangeFromArray(ref DiffRange range, byte[] checkedList)
@@ -344,22 +456,20 @@ namespace DtkSymbolDiff
         //Checks if a symbol matches first based on name, then on size.
         public bool CheckIfSymbolsMatch(Symbol s1, Symbol s2)
         {
-            if (s1.name == s2.name || s1.size == s2.size) return true;
-
-            //If leniency is enabled, and the sizes are close enough, count as a match
-            if (allowSizeLeniency && s1.CalculateSizeSimilarity(s2) > sizeThreshold)
-            {
-                return true;
-            }
+            //Only count the names matching if the name is not an auto name
+            if (s1.name == s2.name && !s1.isAuto) return true;
+            else if (s1.size == s2.size) return true;
 
             //Otherwise, the symbols don't match
             return false;
         }
 
-        SymbolMatch FindLongestMatch(int startIndex1, int startIndex2, int endIndex1, int endIndex2)
+        SymbolMatch FindLongestMatch(List<Symbol> symbols1, List<Symbol> symbols2, int startIndex1, int startIndex2, int endIndex1, int endIndex2)
         {
             int maxMatchLength = 0;
             int bestMatchStartIndex1 = 0, bestMatchStartIndex2 = 0;
+            int minSymbolCount = Math.Min(symbols1.Count, symbols2.Count);
+            bool foundMaxLengthMatch = false;
 
 
             for (int i = startIndex1; i < endIndex1; i++)
@@ -370,9 +480,31 @@ namespace DtkSymbolDiff
                     int matchLength = 0;
                     int offset = 0;
 
-                    //Keep going until a mismatch is found (name and size don't match)
-                    while (CheckIfSymbolsMatch(file1.symbols[i + offset], file2.symbols[j + offset]))
-                    {
+                    //Keep going until a mismatch is found
+                    while (true) {
+                        Symbol s1 = symbols1[i + offset];
+                        Symbol s2 = symbols2[j + offset];
+
+                        bool matching = CheckIfSymbolsMatch(s1, s2);
+
+                        /* If the symbols don't match, the threshold option is enabled, and the current match sequence is
+                        long enough, run the size threshold check */
+                        if (!matching && options.useSymbolSizeThreshold && matchLength > matchLengthThreshold)
+                        {
+                            //Only run the check if at least one symbol is auto
+                            if (s1.isAuto || s2.isAuto)
+                            {
+                                float similarity = s1.CalculateSizeSimilarity(s2);
+                                if (similarity > sizeThreshold)
+                                {
+                                    //The symbol is about the threshold, so count as a match
+                                    matching = true;
+                                }
+                            }
+                        }
+
+                        if (!matching) break;
+
                         matchLength++;
                         offset++;
 
@@ -400,12 +532,21 @@ namespace DtkSymbolDiff
                              maxMatchLength = matchLength;
                              bestMatchStartIndex1 = i;
                              bestMatchStartIndex2 = j;
+
+                            //If the match length is the same as the length of the shorter list, exit early
+                            if (maxMatchLength == minSymbolCount)
+                            {
+                                foundMaxLengthMatch = true;
+                                break;
+                            }
                          }
 
                         //Skip past matched range
                         //j += offset - 1;
                     }
                 }
+
+                if (foundMaxLengthMatch) break;
             }
 
             return new SymbolMatch(bestMatchStartIndex1, bestMatchStartIndex2, maxMatchLength);
