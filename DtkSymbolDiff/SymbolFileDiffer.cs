@@ -138,6 +138,15 @@ namespace DtkSymbolDiff
             {
                 SymbolMatch match = matches[i];
 
+
+                /* If this is the first match, print the mismatched symbols before the match. The bounds checks
+                in the function prevent anything from being printed if there are no mismatches before (both indices are 0), so
+                there's no need to check here. */
+                if (i == 0)
+                {
+                    PrintMismatches(symbols1, symbols2, 0, match.list1StartIndex, 0, match.list2StartIndex);
+                }
+
                 Symbol list1FirstSymbol = symbols1[match.list1StartIndex];
                 Symbol list1LastSymbol = symbols1[match.list1EndIndex - 1];
                 Symbol list2FirstSymbol = symbols2[match.list2StartIndex];
@@ -159,65 +168,14 @@ namespace DtkSymbolDiff
                 }
                 sw.WriteLine();
 
-                //Print nonmatched symbols inbetween
-
-                int mismatchEndIndex1 = 0, mismatchEndIndex2 = 0;
-
-                /* If this is the last match, use the lengths of each respective list as the end index. Otherwise, use the start
-                index of the next match. */
-                if (i == matches.Count - 1)
-                {
-                    mismatchEndIndex1 = symbols1.Count;
-                    mismatchEndIndex2 = symbols2.Count;
-
-                }
-                else
-                {
-                    SymbolMatch nextMatch = matches[i + 1];
-                    mismatchEndIndex1 = nextMatch.list1StartIndex;
-                    mismatchEndIndex2 = nextMatch.list2StartIndex;
-                }
+                //Print nonmatched symbols after
 
                 int mismatchStartIndex1 = match.list1EndIndex;
                 int mismatchStartIndex2 = match.list2EndIndex;
+                int mismatchEndIndex1 = i == matches.Count - 1 ? symbols1.Count : matches[i + 1].list1StartIndex;
+                int mismatchEndIndex2 = i == matches.Count - 1 ? symbols2.Count : matches[i + 1].list2StartIndex;
 
-                bool list1Mismatch = mismatchStartIndex1 < mismatchEndIndex1;
-                bool list2Mismatch = mismatchStartIndex2 < mismatchEndIndex2;
-
-                if (list1Mismatch || list2Mismatch) {
-
-                    string rangeString1 = CreateRangeString(mismatchStartIndex1, mismatchEndIndex1 - 1);
-                    string rangeString2 = CreateRangeString(mismatchStartIndex2, mismatchEndIndex2 - 1);
-
-                    //Change the print message depending on if both or only one list has symbols left
-                    if (list1Mismatch && list2Mismatch)
-                    {
-                        sw.WriteLine("Mismatch at symbols {0}/{1}", rangeString1, rangeString2);
-                    }
-                    else
-                    {
-                        int fileNumber = list1Mismatch ? 1 : 2;
-                        sw.WriteLine("Mismatch at symbols {0} (file {1})", list1Mismatch ? rangeString1 : rangeString2, fileNumber);
-                    }
-
-                    if (list1Mismatch)
-                    {
-                        for (int j = mismatchStartIndex1; j < mismatchEndIndex1; j++)
-                        {
-                            sw.WriteLine("-" + symbols1[j].ToString());
-                        }
-                        sw.WriteLine();
-                    }
-
-                    if (list2Mismatch)
-                    {
-                        for (int j = mismatchStartIndex2; j < mismatchEndIndex2; j++)
-                        {
-                            sw.WriteLine("+" + symbols2[j].ToString());
-                        }
-                        sw.WriteLine();
-                    }
-                }
+                PrintMismatches(symbols1, symbols2, mismatchStartIndex1, mismatchEndIndex1, mismatchStartIndex2, mismatchEndIndex2);
             }
 
             if (options.printDifferentSizeSymbols)
@@ -227,16 +185,59 @@ namespace DtkSymbolDiff
                 {
                     SymbolMatch match = matches[i];
 
-                    for(int j = 0; j < match.length; j++)
+                    for (int j = 0; j < match.length; j++)
                     {
                         Symbol symbol1 = symbols1[j + match.list1StartIndex];
                         Symbol symbol2 = symbols2[j + match.list2StartIndex];
 
-                        if(symbol1.size != symbol2.size)
+                        if (symbol1.size != symbol2.size)
                         {
                             sw.WriteLine("{0} (0x{1:X}/0x{2:X})", symbol1.name, symbol1.size, symbol2.size);
                         }
                     }
+                }
+            }
+        }
+
+        void PrintMismatches(List<Symbol> symbols1, List<Symbol> symbols2, int startIndex1, int endIndex1, int startIndex2, int endIndex2)
+        {
+
+            bool list1Mismatch = startIndex1 < endIndex1;
+            bool list2Mismatch = startIndex2 < endIndex2;
+
+            if (list1Mismatch || list2Mismatch)
+            {
+
+                string rangeString1 = CreateRangeString(startIndex1, endIndex1 - 1);
+                string rangeString2 = CreateRangeString(startIndex2, endIndex2 - 1);
+
+                //Change the print message depending on if both or only one list has symbols left
+                if (list1Mismatch && list2Mismatch)
+                {
+                    sw.WriteLine("Mismatch at symbols {0}/{1}", rangeString1, rangeString2);
+                }
+                else
+                {
+                    int fileNumber = list1Mismatch ? 1 : 2;
+                    sw.WriteLine("Mismatch at symbols {0} (file {1})", list1Mismatch ? rangeString1 : rangeString2, fileNumber);
+                }
+
+                if (list1Mismatch)
+                {
+                    for (int j = startIndex1; j < endIndex1; j++)
+                    {
+                        sw.WriteLine("-" + symbols1[j].ToString());
+                    }
+                    sw.WriteLine();
+                }
+
+                if (list2Mismatch)
+                {
+                    for (int j = startIndex2; j < endIndex2; j++)
+                    {
+                        sw.WriteLine("+" + symbols2[j].ToString());
+                    }
+                    sw.WriteLine();
                 }
             }
         }
@@ -249,16 +250,16 @@ namespace DtkSymbolDiff
 
         public void DiffFiles()
         {
-            for(int i = 0; i < file1.sections.Count; i++)
+            for (int i = 0; i < file1.sections.Count; i++)
             {
                 Section section1 = file1.sections[i];
                 //Find the matching section in the other file. If it doesn't exist, skip diffing the section.
                 Section section2 = file2.GetSection(section1.name);
 
-                if(section2 != null)
+                if (section2 != null)
                 {
                     //If this section is a data section, and the include data symbols option is off, skip it
-                    if(!options.includeDataSymbols && !section1.IsCodeSection())
+                    if (!options.includeDataSymbols && !section1.IsCodeSection())
                     {
                         continue;
                     }
@@ -481,7 +482,8 @@ namespace DtkSymbolDiff
                     int offset = 0;
 
                     //Keep going until a mismatch is found
-                    while (true) {
+                    while (true)
+                    {
                         Symbol s1 = symbols1[i + offset];
                         Symbol s2 = symbols2[j + offset];
 
@@ -514,24 +516,25 @@ namespace DtkSymbolDiff
                     if (matchLength > 0)
                     {
                         //Determine if the current match is better than the current best
-                        
+
                         bool isBetterMatch = false;
 
                         if (matchLength > maxMatchLength) isBetterMatch = true;
-                        else if(matchLength == maxMatchLength) {
-                             /* If the match length is equal to the current best, accept it over it if it comes earlier
-                             than the current best match */
-                             int avgIndex = (i + j) / 2;
-                             int bestMatchAvgIndex = (bestMatchStartIndex1 + bestMatchStartIndex2) / 2;
+                        else if (matchLength == maxMatchLength)
+                        {
+                            /* If the match length is equal to the current best, accept it over it if it comes earlier
+                            than the current best match */
+                            int avgIndex = (i + j) / 2;
+                            int bestMatchAvgIndex = (bestMatchStartIndex1 + bestMatchStartIndex2) / 2;
 
-                             if (avgIndex < bestMatchAvgIndex) isBetterMatch = true;
-                         }
+                            if (avgIndex < bestMatchAvgIndex) isBetterMatch = true;
+                        }
 
-                         if (isBetterMatch)
-                         {
-                             maxMatchLength = matchLength;
-                             bestMatchStartIndex1 = i;
-                             bestMatchStartIndex2 = j;
+                        if (isBetterMatch)
+                        {
+                            maxMatchLength = matchLength;
+                            bestMatchStartIndex1 = i;
+                            bestMatchStartIndex2 = j;
 
                             //If the match length is the same as the length of the shorter list, exit early
                             if (maxMatchLength == minSymbolCount)
@@ -539,7 +542,7 @@ namespace DtkSymbolDiff
                                 foundMaxLengthMatch = true;
                                 break;
                             }
-                         }
+                        }
 
                         //Skip past matched range
                         //j += offset - 1;
