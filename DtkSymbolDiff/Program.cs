@@ -22,7 +22,7 @@ namespace DtkSymbolDiff
             if(!differ.filesLoaded) return;
 
             //Return if one of the lists is empty
-            if (differ.symbolList1.Count == 0 || differ.symbolList2.Count == 0)
+            if (differ.file1.totalSymbols == 0 || differ.file2.totalSymbols == 0)
             {
                 Console.WriteLine("One of the symbol files is empty");
                 return;
@@ -38,8 +38,8 @@ namespace DtkSymbolDiff
 
             //Write matches to the output file
             StreamWriter sw = new StreamWriter(args[2], false);
-            differ.PrintMatches(sw);
-            sw.Flush();
+            differ.sw = sw;
+            differ.PrintMatches();
         }
    
     }

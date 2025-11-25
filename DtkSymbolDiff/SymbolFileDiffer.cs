@@ -1,35 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.RegularExpressions;
 using System.Diagnostics;
 
 namespace DtkSymbolDiff
 {
-    class Symbol
-    {
-        public string name;
-        public uint address;
-        public int size;
-
-        public Symbol(string name, uint address, int size)
-        {
-            this.name = name;
-            this.address = address;
-            this.size = size;
-        }
-
-        //Checks if a symbol matches first based on name, then on size.
-        public static bool IsEqual(Symbol s1, Symbol s2)
-        {
-            return s1.name == s2.name || s1.size == s2.size;
-        }
-
-        public new string ToString()
-        {
-            return string.Format("{0} (0x{1:X8}, size 0x{2:X})", name, address, size);
-        }
-    }
 
     class SymbolMatchComparer : IComparer<SymbolMatch>
     {
@@ -72,73 +47,36 @@ namespace DtkSymbolDiff
 
     internal class SymbolFileDiffer
     {
-        public List<Symbol> symbolList1;
-        public List<Symbol> symbolList2;
+        public SymbolFile file1;
+        public SymbolFile file2;
         public List<SymbolMatch> matches;
-        public bool filesLoaded;
+        public bool filesLoaded = false;
+        public StreamWriter sw;
+
+        bool allowSizeLeniency = false; //Allows symbols to still match as long at their sizes are relatively close
+        const float sizeThreshold = 0.95f;
+        
 
         public SymbolFileDiffer(string file1Path, string file2Path)
         {
-            filesLoaded = false;
             matches = new List<SymbolMatch>();
 
-            symbolList1 = ReadSymbolFile(file1Path);
-            symbolList2 = ReadSymbolFile(file2Path);
+            file1 = new SymbolFile(file1Path);
+            file2 = new SymbolFile(file2Path);
 
-            if (symbolList1 != null && symbolList2 != null)
+            if (file1.loaded && file2.loaded)
             {
                 filesLoaded = true;
             }
         }
 
-        List<Symbol> ReadSymbolFile(string path)
+
+        public void PrintMatches()
         {
-            if (!File.Exists(path))
-            {
-                Console.WriteLine("Error: could not find file \"{0}\"", path);
-                return null;
-            }
 
-            StreamReader sr = new StreamReader(path);
-            List<Symbol> symbols = new List<Symbol>();
-            Regex lineRegex = new Regex(@"^([^\s]+) = .+:(0x[0-9A-F]{8});(?:.+size:(0x[0-9A-F]+)|).*$");
-
-            while (!sr.EndOfStream)
-            {
-                string line = sr.ReadLine().Trim();
-
-                //Ignore empty lines and comment lines
-                if (line == "" || line.StartsWith("//")) continue;
-
-                Match match = lineRegex.Match(line);
-
-                if (match.Success)
-                {
-                    string name = match.Groups[1].Value;
-                    uint address = Convert.ToUInt32(match.Groups[2].Value, 16);
-                    int size = 0;
-
-                    /* Size is allowed to be optional, so only parse it if the line has it. Otherwise, the size
-                    is just set to 0. */
-                    if (match.Groups[3].Success) size = Convert.ToInt32(match.Groups[3].Value, 16);
-
-                    Symbol symbol = new Symbol(name, address, size);
-                    symbols.Add(symbol);
-                }
-                else
-                {
-                    Console.WriteLine("Error: invalid line in file \"{0}\"", path);
-                    Console.WriteLine("Line: \"{0}\"", line);
-                    return null;
-                }
-            }
-
-            return symbols;
-        }
-
-
-        public void PrintMatches(StreamWriter sw)
-        {
+            sw.WriteLine("List 1 file: {0}", file1.name);
+            sw.WriteLine("List 2 file: {0}", file2.name);
+            sw.WriteLine();
 
             int numMatches = matches.Count;
 
@@ -147,10 +85,25 @@ namespace DtkSymbolDiff
             {
                 SymbolMatch match = matches[i];
 
-                sw.WriteLine(string.Format("Lines {0}-{1} in list 1 match with lines {2}-{3} in list 2 ({4} total symbols)",
-                    match.list1StartIndex + 1, match.list1EndIndex, match.list2StartIndex + 1, match.list2EndIndex, match.length));
-                sw.WriteLine("First symbol of list 1: " + symbolList1[match.list1StartIndex].ToString());
-                sw.WriteLine("First symbol of list 2: " + symbolList2[match.list2StartIndex].ToString());
+                sw.WriteLine(string.Format("Lines {0}/{1} match ({2} total symbol(s))",
+                    CreateRangeString(match.list1StartIndex + 1, match.list1EndIndex), CreateRangeString(match.list2StartIndex + 1, match.list2EndIndex),
+                    match.length));
+
+                Symbol list1FirstSymbol = file1.symbols[match.list1StartIndex];
+                Symbol list1LastSymbol = file1.symbols[match.list1EndIndex - 1];
+                Symbol list2FirstSymbol = file2.symbols[match.list2StartIndex];
+                Symbol list2LastSymbol = file2.symbols[match.list2EndIndex - 1];
+
+                if (match.length > 1)
+                {
+                    sw.WriteLine("List 1: {0} ... {1}", list1FirstSymbol.ToString(), list1LastSymbol.ToString());
+                    sw.WriteLine("List 2: {0} ... {1}", list2FirstSymbol.ToString(), list2LastSymbol.ToString());
+                }
+                else
+                {
+                    sw.WriteLine("List 1: {0}", list1FirstSymbol.ToString());
+                    sw.WriteLine("List 2: {0}", list2FirstSymbol.ToString());
+                }
                 sw.WriteLine();
 
                 //Print nonmatched symbols inbetween
@@ -161,8 +114,8 @@ namespace DtkSymbolDiff
                 index of the next match. */
                 if (i == matches.Count - 1)
                 {
-                    mismatchEndIndex1 = symbolList1.Count;
-                    mismatchEndIndex2 = symbolList2.Count;
+                    mismatchEndIndex1 = file1.symbols.Count;
+                    mismatchEndIndex2 = file2.symbols.Count;
 
                 }
                 else
@@ -174,44 +127,58 @@ namespace DtkSymbolDiff
 
                 int mismatchStartIndex1 = match.list1EndIndex;
                 int mismatchStartIndex2 = match.list2EndIndex;
+                int mismatchLength1 = mismatchEndIndex1 - mismatchStartIndex1;
+                int mismatchLength2 = mismatchEndIndex2 - mismatchStartIndex2;
 
-                if (mismatchStartIndex1 < mismatchEndIndex1)
-                {
-                    int length = mismatchEndIndex1 - mismatchStartIndex1;
-                    if (length > 1) sw.WriteLine("List 1 mismatches (lines {0}-{1}, {2} total symbols):",
-                        mismatchStartIndex1 + 1, mismatchEndIndex1, length);
-                    else sw.WriteLine("List 1 mismatches (line {0}):", mismatchStartIndex1 + 1);
+                bool list1Mismatch = mismatchStartIndex1 < mismatchEndIndex1;
+                bool list2Mismatch = mismatchStartIndex2 < mismatchEndIndex2;
 
-                    for (int k = mismatchStartIndex1; k < mismatchEndIndex1; k++)
+                if (list1Mismatch || list2Mismatch) {
+                    int list1StartLine = mismatchStartIndex1 + 1;
+                    int list2StartLine = mismatchStartIndex2 + 1;
+
+                    sw.WriteLine("Mismatch at lines {0}/{1}",
+                        CreateRangeString(list1StartLine, mismatchEndIndex1), CreateRangeString(list2StartLine, mismatchEndIndex2));
+
+                    if (list1Mismatch)
                     {
-                        sw.WriteLine(symbolList1[k].ToString());
+                        PrintMismatchGroup(mismatchStartIndex1, mismatchEndIndex1, 0);
                     }
-                    sw.WriteLine();
-                }
 
-                if (mismatchStartIndex2 < mismatchEndIndex2)
-                {
-                    int length = mismatchEndIndex2 - mismatchStartIndex2;
-                    if (length > 1) sw.WriteLine("List 2 mismatches (lines {0}-{1}, {2} total symbols):",
-                        mismatchStartIndex2 + 1, mismatchEndIndex2, length);
-                    else sw.WriteLine("List 2 mismatches (line {0}):", mismatchStartIndex2 + 1);
-
-                    for (int k = mismatchStartIndex2; k < mismatchEndIndex2; k++)
+                    if (list2Mismatch)
                     {
-                        sw.WriteLine(symbolList2[k].ToString());
+                        PrintMismatchGroup(mismatchStartIndex2, mismatchEndIndex2, 1);
                     }
-                    sw.WriteLine();
                 }
             }
+
+            sw.Flush();
+        }
+
+        string CreateRangeString(int start, int end)
+        {
+            int length = end - start;
+            return length > 1 ? string.Format("{0}-{1}", start, end) : string.Format("{0}", start);
+        }
+
+        void PrintMismatchGroup(int startIndex, int endIndex, int whichList)
+        {
+            for (int i = startIndex; i < endIndex; i++)
+            {
+                List<Symbol> list = whichList == 0 ? file1.symbols : file2.symbols;
+                sw.WriteLine((whichList == 0 ? "-" : "+") + list[i].ToString());
+            }
+            sw.WriteLine();
         }
 
         public void DiffFiles()
         {
-            byte[] list1CheckedLines = new byte[symbolList1.Count];
-            byte[] list2CheckedLines = new byte[symbolList2.Count];
-
-            DiffRange currentList1Range = new DiffRange(0, symbolList1.Count);
-            DiffRange currentList2Range = new DiffRange(0, symbolList2.Count);
+            int list1Length = file1.totalSymbols;
+            int list2Length = file2.totalSymbols;
+            byte[] list1CheckedLines = new byte[list1Length];
+            byte[] list2CheckedLines = new byte[list2Length];
+            DiffRange currentList1Range = new DiffRange(0, list1Length);
+            DiffRange currentList2Range = new DiffRange(0, list2Length);
 
             //Stupid
             SymbolMatchComparer comparer = new SymbolMatchComparer();
@@ -374,6 +341,20 @@ namespace DtkSymbolDiff
             range.length = range.rangeEnd - range.rangeStart;
         }
 
+        //Checks if a symbol matches first based on name, then on size.
+        public bool CheckIfSymbolsMatch(Symbol s1, Symbol s2)
+        {
+            if (s1.name == s2.name || s1.size == s2.size) return true;
+
+            //If leniency is enabled, and the sizes are close enough, count as a match
+            if (allowSizeLeniency && s1.CalculateSizeSimilarity(s2) > sizeThreshold)
+            {
+                return true;
+            }
+
+            //Otherwise, the symbols don't match
+            return false;
+        }
 
         SymbolMatch FindLongestMatch(int startIndex1, int startIndex2, int endIndex1, int endIndex2)
         {
@@ -390,7 +371,7 @@ namespace DtkSymbolDiff
                     int offset = 0;
 
                     //Keep going until a mismatch is found (name and size don't match)
-                    while (Symbol.IsEqual(symbolList1[i + offset], symbolList2[j + offset]))
+                    while (CheckIfSymbolsMatch(file1.symbols[i + offset], file2.symbols[j + offset]))
                     {
                         matchLength++;
                         offset++;
