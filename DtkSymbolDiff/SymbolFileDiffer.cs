@@ -457,9 +457,10 @@ namespace DtkSymbolDiff
         //Checks if a symbol matches first based on name, then on size.
         public bool CheckIfSymbolsMatch(Symbol s1, Symbol s2)
         {
-            //Only count the names matching if the name is not an auto name
+            /* Only count the names matching if the name is not an auto name, and the sizes
+            if at least of the symbols is auto. */
             if (s1.name == s2.name && !s1.isAuto) return true;
-            else if (s1.size == s2.size) return true;
+            else if (s1.size == s2.size && (s1.isAuto || s2.isAuto)) return true;
 
             //Otherwise, the symbols don't match
             return false;
